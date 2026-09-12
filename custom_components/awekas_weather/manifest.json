@@ -1,0 +1,14 @@
+{
+  "domain": "awekas_weather",
+  "name": "AWEKAS Weather",
+  "codeowners": [
+    "@xpertsavenue"
+  ],
+  "config_flow": true,
+  "dependencies": ["utility_meter"],
+  "documentation": "https://www.home-assistant.io/integrations/awekas",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "quality_scale": "silver",
+  "version": "1.0.0"
+}

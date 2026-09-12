@@ -1,0 +1,121 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AWEKAS Wetterstation einrichten",
+        "description": "Bitte gib deinen AWEKAS API-Schlüssel ein.",
+        "data": {
+          "api_key": "API-Schlüssel",
+          "language": "Sprache"
+        }
+      },
+      "reauth_confirm": {
+        "title": "AWEKAS Authentifizierung erneuern",
+        "description": "Der API-Schlüssel für AWEKAS ist ungültig oder abgelaufen. Bitte gib deinen aktuellen API-Schlüssel ein.",
+        "data": {
+          "api_key": "API-Schlüssel"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung fehlgeschlagen",
+      "invalid_auth": "Ungültige Authentifizierung",
+      "unknown": "Unerwarteter Fehler"
+    },
+    "abort": {
+      "already_configured": "Gerät ist bereits konfiguriert",
+      "reauth_successful": "Die Re-Authentifizierung war erfolgreich",
+      "invalid_api_key": "Ungültiger AWEKAS API-Schlüssel"
+    }
+  },
+  "exceptions": {
+    "invalid_api_key": {
+      "message": "Ungültiger AWEKAS API-Schlüssel."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "itsraining": {
+        "name": "Regenstatus",
+        "state": {
+          "off": "Kein Regen",
+          "on": "Regen"
+        }
+      },
+      "leafwetness": {
+        "name": "Blattfeuchte Status",
+        "state": {
+          "off": "Trocken",
+          "on": "Nass"
+        }
+      }
+    },
+    "sensor": {
+      "airpress_rel": { "name": "Relativer Luftdruck" },
+      "airquality_pm1": { "name": "Feinstaub PM1" },
+      "airquality_pm10": { "name": "Feinstaub PM10" },
+      "airquality_pm2": { "name": "Feinstaub PM2.5" },
+      "brightness": { "name": "Helligkeit" },
+      "day_airp_rel_max": { "name": "Max. Relativer Luftdruck (Tag)" },
+      "day_airp_rel_min": { "name": "Min. Relativer Luftdruck (Tag)" },
+      "day_brightness_max": { "name": "Max. Helligkeit (Tag)" },
+      "day_dewpoint_max": { "name": "Max. Taupunkt (Tag)" },
+      "day_dewpoint_min": { "name": "Min. Taupunkt (Tag)" },
+      "day_gustdir_max": { "name": "Max. Böenrichtung (Tag)" },
+      "day_gustspeed_max": { "name": "Max. Windböen (Tag)" },
+      "day_gustspeed_min": { "name": "Min. Windböen (Tag)" },
+      "day_hum_max": { "name": "Max. Luftfeuchtigkeit Außen (Tag)" },
+      "day_hum_min": { "name": "Min. Luftfeuchtigkeit Außen (Tag)" },
+      "day_inhum_max": { "name": "Max. Luftfeuchtigkeit Innen (Tag)" },
+      "day_inhum_min": { "name": "Min. Luftfeuchtigkeit Innen (Tag)" },
+      "day_intemp_max": { "name": "Max. Innentemperatur (Tag)" },
+      "day_intemp_min": { "name": "Min. Innentemperatur (Tag)" },
+      "day_precipitation_24h": { "name": "Niederschlag (letzte 24 Std)" },
+      "day_rainrate_max": { "name": "Max. Regenrate (Tag)" },
+      "day_solar_max": { "name": "Max. Solarstrahlung (Tag)" },
+      "day_temp_max": { "name": "Max. Außentemperatur (Tag)" },
+      "day_temp_min": { "name": "Min. Außentemperatur (Tag)" },
+      "day_uv_max": { "name": "Max. UV-Index (Tag)" },
+      "day_winddir_max": { "name": "Max. Windrichtung (Tag)" },
+      "day_windspeed_max": { "name": "Max. Windgeschwindigkeit (Tag)" },
+      "day_windspeed_min": { "name": "Min. Windgeschwindigkeit (Tag)" },
+      "dewpoint": { "name": "Taupunkt" },
+      "gustspeed": { "name": "Windböen-Geschwindigkeit" },
+      "humidity": { "name": "Luftfeuchtigkeit Außen" },
+      "humidity1": { "name": "Luftfeuchtigkeit 1" },
+      "humidity2": { "name": "Luftfeuchtigkeit 2" },
+      "humidity3": { "name": "Luftfeuchtigkeit 3" },
+      "humidity4": { "name": "Luftfeuchtigkeit 4" },
+      "indoorhumidity": { "name": "Luftfeuchtigkeit Innen" },
+      "indoortemperature": { "name": "Innentemperatur" },
+      "leafwetness1": { "name": "Blattfeuchte 1" },
+      "leafwetness2": { "name": "Blattfeuchte 2" },
+      "precipitation": { "name": "Niederschlag heute" },
+      "precipitation_1h": { "name": "Niederschlag (letzte Stunde)" },
+      "rainrate": { "name": "Regenrate" },
+      "snowheight": { "name": "Schneehöhe" },
+      "soilmoisture1": { "name": "Bodenfeuchte 1" },
+      "soilmoisture2": { "name": "Bodenfeuchte 2" },
+      "soilmoisture3": { "name": "Bodenfeuchte 3" },
+      "soilmoisture4": { "name": "Bodenfeuchte 4" },
+      "solar": { "name": "Solarstrahlung" },
+      "suntime": { "name": "Sonnenscheindauer" },
+      "temp1": { "name": "Temperatur 1" },
+      "temp2": { "name": "Temperatur 2" },
+      "temp3": { "name": "Temperatur 3" },
+      "temp4": { "name": "Temperatur 4" },
+      "temperature": { "name": "Außentemperatur" },
+      "tendency": { "name": "Luftdrucktendenz" },
+      "uv": { "name": "UV-Index" },
+      "wetbulbtemperature": { "name": "Kühlgrenztemperatur" },
+      "windchill": { "name": "Windchill-Temperatur" },
+      "winddirection": { "name": "Windrichtung" },
+      "windspeed": { "name": "Windgeschwindigkeit" }
+    },
+    "weather": {
+      "weather": {
+        "name": "Wetter"
+      }
+    }
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up AWEKAS Weather Station",
+        "description": "Please enter your AWEKAS API key.",
+        "data": {
+          "api_key": "API Key",
+          "language": "Language"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate AWEKAS",
+        "description": "The AWEKAS API key is invalid or expired. Please enter a valid API key.",
+        "data": {
+          "api_key": "API Key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "invalid_api_key": "Invalid AWEKAS API key"
+    }
+  },
+  "exceptions": {
+    "invalid_api_key": {
+      "message": "Invalid AWEKAS API key."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "itsraining": {
+        "name": "Raining",
+        "state": {
+          "off": "No rain",
+          "on": "Rain"
+        }
+      },
+      "leafwetness": {
+        "name": "Leaf wetness",
+        "state": {
+          "off": "Dry",
+          "on": "Wet"
+        }
+      }
+    },
+    "sensor": {
+      "airpress_rel": { "name": "Relative Pressure" },
+      "airquality_pm1": { "name": "Particulate Matter PM1" },
+      "airquality_pm10": { "name": "Particulate Matter PM10" },
+      "airquality_pm2": { "name": "Particulate Matter PM2.5" },
+      "brightness": { "name": "Brightness" },
+      "day_airp_rel_max": { "name": "Max Relative Pressure (Day)" },
+      "day_airp_rel_min": { "name": "Min Relative Pressure (Day)" },
+      "day_brightness_max": { "name": "Max Brightness (Day)" },
+      "day_dewpoint_max": { "name": "Max Dew Point (Day)" },
+      "day_dewpoint_min": { "name": "Min Dew Point (Day)" },
+      "day_gustdir_max": { "name": "Max Gust Direction (Day)" },
+      "day_gustspeed_max": { "name": "Max Gust Speed (Day)" },
+      "day_gustspeed_min": { "name": "Min Gust Speed (Day)" },
+      "day_hum_max": { "name": "Max Outdoor Humidity (Day)" },
+      "day_hum_min": { "name": "Min Outdoor Humidity (Day)" },
+      "day_inhum_max": { "name": "Max Indoor Humidity (Day)" },
+      "day_inhum_min": { "name": "Min Indoor Humidity (Day)" },
+      "day_intemp_max": { "name": "Max Indoor Temperature (Day)" },
+      "day_intemp_min": { "name": "Min Indoor Temperature (Day)" },
+      "day_precipitation_24h": { "name": "Precipitation (last 24h)" },
+      "day_rainrate_max": { "name": "Max Rain Rate (Day)" },
+      "day_solar_max": { "name": "Max Solar Radiation (Day)" },
+      "day_temp_max": { "name": "Max Outdoor Temperature (Day)" },
+      "day_temp_min": { "name": "Min Outdoor Temperature (Day)" },
+      "day_uv_max": { "name": "Max UV Index (Day)" },
+      "day_winddir_max": { "name": "Max Wind Direction (Day)" },
+      "day_windspeed_max": { "name": "Max Wind Speed (Day)" },
+      "day_windspeed_min": { "name": "Min Wind Speed (Day)" },
+      "dewpoint": { "name": "Dew Point" },
+      "gustspeed": { "name": "Gust Speed" },
+      "humidity": { "name": "Outdoor Humidity" },
+      "humidity1": { "name": "Humidity 1" },
+      "humidity2": { "name": "Humidity 2" },
+      "humidity3": { "name": "Humidity 3" },
+      "humidity4": { "name": "Humidity 4" },
+      "indoorhumidity": { "name": "Indoor Humidity" },
+      "indoortemperature": { "name": "Indoor Temperature" },
+      "leafwetness1": { "name": "Leaf Wetness 1" },
+      "leafwetness2": { "name": "Leaf Wetness 2" },
+      "precipitation": { "name": "Daily Precipitation" },
+      "precipitation_1h": { "name": "Precipitation (last 1h)" },
+      "rainrate": { "name": "Rain Rate" },
+      "snowheight": { "name": "Snow Height" },
+      "soilmoisture1": { "name": "Soil Moisture 1" },
+      "soilmoisture2": { "name": "Soil Moisture 2" },
+      "soilmoisture3": { "name": "Soil Moisture 3" },
+      "soilmoisture4": { "name": "Soil Moisture 4" },
+      "solar": { "name": "Solar Radiation" },
+      "suntime": { "name": "Sunshine Time" },
+      "temp1": { "name": "Temperature 1" },
+      "temp2": { "name": "Temperature 2" },
+      "temp3": { "name": "Temperature 3" },
+      "temp4": { "name": "Temperature 4" },
+      "temperature": { "name": "Outdoor Temperature" },
+      "tendency": { "name": "Pressure Tendency" },
+      "uv": { "name": "UV Index" },
+      "wetbulbtemperature": { "name": "Wet Bulb Temperature" },
+      "windchill": { "name": "Wind Chill" },
+      "winddirection": { "name": "Wind Direction" },
+      "windspeed": { "name": "Wind Speed" }
+    },
+    "weather": {
+      "weather": {
+        "name": "Weather"
+      }
+    }
+  }
+}
