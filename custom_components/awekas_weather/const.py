@@ -1,6 +1,6 @@
 """Constants for the AWEKAS Weather integration."""
 
-DOMAIN = "awekas"
+DOMAIN = "awekas_weather"
 
 # CONF_LANGUAGE = "language"
 DEFAULT_SCAN_INTERVAL = 30  # 5 Minuten Standard-Intervall in Sekunden
