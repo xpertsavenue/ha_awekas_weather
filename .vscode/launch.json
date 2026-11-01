@@ -10,8 +10,19 @@
         "--config",
         "${workspaceFolder}/config"
       ],
+      "preLaunchTask": "Home Assistant: Setup",
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Attach to running Home Assistant",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5678
+      },
+      "justMyCode": false
     }
   ]
 }

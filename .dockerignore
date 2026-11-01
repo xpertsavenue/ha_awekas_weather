@@ -1,0 +1,4 @@
+# Only the requirements files are needed to build the dev container image
+*
+!requirements_dev.txt
+!requirements_test.txt

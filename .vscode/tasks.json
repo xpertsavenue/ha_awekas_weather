@@ -1,0 +1,57 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Home Assistant: Start",
+            "type": "shell",
+            "command": "bash scripts/ha.sh start",
+            "isBackground": true,
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Home Assistant: Setup",
+            "type": "shell",
+            "command": "bash scripts/setup.sh",
+            "problemMatcher": []
+        },
+        {
+            "label": "Home Assistant: Stop",
+            "type": "shell",
+            "command": "bash scripts/ha.sh stop",
+            "problemMatcher": []
+        },
+        {
+            "label": "Home Assistant: Restart",
+            "type": "shell",
+            "command": "bash scripts/ha.sh restart",
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Tests",
+            "type": "shell",
+            "command": "pytest --cov=custom_components.awekas_weather --cov-report=term-missing",
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Lint",
+            "type": "shell",
+            "command": "ruff check . && ruff format --check .",
+            "problemMatcher": []
+        },
+        {
+            "label": "Format",
+            "type": "shell",
+            "command": "ruff check --fix . && ruff format .",
+            "problemMatcher": []
+        }
+    ]
+}

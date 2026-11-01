@@ -4,14 +4,24 @@ line-length = 88
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort (Import-Sortierung)
-    "UP",  # pyupgrade (Syntax auf neuere Python-Versionen anheben)
-    "ASYNC", # Rules for async Python (wichtig für HA)
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "ASYNC", # async rules (important for Home Assistant)
 ]
-ignore = []
+ignore = [
+    "E501", # line length is handled by the formatter
+]
 
 [tool.ruff.lint.isort]
-known-first-party = ["custom_components.awekas_weather"]
+known-first-party = ["custom_components.awekas_weather", "tests"]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

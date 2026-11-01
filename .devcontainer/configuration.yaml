@@ -1,5 +1,5 @@
 # Home Assistant configuration – used inside the dev container
-# This file is symlinked from config/configuration.yaml by scripts/setup.sh
+# scripts/setup.sh links it to config/configuration.yaml
 
 # default_config is intentionally NOT used here because it pulls in go2rtc,
 # which requires a Docker binary unavailable in the dev container.
@@ -40,5 +40,6 @@ recorder:
           - climate
           - sensor
           - binary_sensor
+          - weather
           - number
           - select

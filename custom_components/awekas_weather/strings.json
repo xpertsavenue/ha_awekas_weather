@@ -5,8 +5,10 @@
         "title": "Set up AWEKAS Weather Station",
         "description": "Please enter your AWEKAS API key.",
         "data": {
-          "api_key": "API Key",
-          "language": "Language"
+          "api_key": "API Key"
+        },
+        "data_description": {
+          "api_key": "The API key from your AWEKAS user profile. AWEKAS plus must be activated in the profile."
         }
       },
       "reauth_confirm": {
@@ -14,23 +16,55 @@
         "description": "The AWEKAS API key is invalid or expired. Please enter a valid API key.",
         "data": {
           "api_key": "API Key"
+        },
+        "data_description": {
+          "api_key": "The current API key from your AWEKAS user profile. It has to belong to the same weather station."
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect",
       "invalid_auth": "Invalid authentication",
+      "awekas_plus_not_active": "AWEKAS plus is not activated in your AWEKAS user profile. The API requires it.",
+      "quota_exceeded": "The request quota of this API key is exhausted. Please try again later.",
       "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "Device is already configured",
       "reauth_successful": "Re-authentication was successful",
-      "invalid_api_key": "Invalid AWEKAS API key"
+      "wrong_station": "This API key belongs to another weather station."
     }
   },
   "exceptions": {
     "invalid_api_key": {
-      "message": "Invalid AWEKAS API key."
+      "message": "The AWEKAS API rejected the API key: {error}"
+    },
+    "awekas_plus_not_active": {
+      "message": "AWEKAS plus is not activated in the AWEKAS user profile. Activate it and reload the integration."
+    },
+    "not_a_precipitation_total": {
+      "message": "{entity_id} is not a month or year precipitation sensor of this integration."
+    },
+    "quota_exceeded": {
+      "message": "The request quota of the AWEKAS API key is exhausted, polling is paused for 15 minutes."
+    },
+    "cannot_connect": {
+      "message": "Error communicating with the AWEKAS API: {error}"
+    },
+    "api_error": {
+      "message": "The AWEKAS API reported an error: {error}"
+    }
+  },
+  "services": {
+    "set_precipitation_total": {
+      "name": "Set precipitation total",
+      "description": "Sets the month or year precipitation to a value, for example to correct it afterwards. The total continues from this value.",
+      "fields": {
+        "value": {
+          "name": "Precipitation",
+          "description": "The new total in millimeters. Home Assistant counts an increase as rain that fell at this moment in the long-term statistics."
+        }
+      }
     }
   },
   "entity": {
@@ -41,13 +75,6 @@
           "off": "No rain",
           "on": "Rain"
         }
-      },
-      "leafwetness": {
-        "name": "Leaf wetness",
-        "state": {
-          "off": "Dry",
-          "on": "Wet"
-        }
       }
     },
     "sensor": {
@@ -56,6 +83,10 @@
       "airquality_pm10": { "name": "Particulate Matter PM10" },
       "airquality_pm2": { "name": "Particulate Matter PM2.5" },
       "brightness": { "name": "Brightness" },
+      "datatimestamp": { "name": "Last measurement" },
+      "day_airquality_pm1": { "name": "Particulate Matter PM1 (24h average)" },
+      "day_airquality_pm10": { "name": "Particulate Matter PM10 (24h average)" },
+      "day_airquality_pm2": { "name": "Particulate Matter PM2.5 (24h average)" },
       "day_airp_rel_max": { "name": "Max Relative Pressure (Day)" },
       "day_airp_rel_min": { "name": "Min Relative Pressure (Day)" },
       "day_brightness_max": { "name": "Max Brightness (Day)" },
@@ -80,6 +111,7 @@
       "day_windspeed_max": { "name": "Max Wind Speed (Day)" },
       "day_windspeed_min": { "name": "Min Wind Speed (Day)" },
       "dewpoint": { "name": "Dew Point" },
+      "stationsweb_expiry": { "name": "Stationsweb subscription expiry" },
       "gustspeed": { "name": "Gust Speed" },
       "humidity": { "name": "Outdoor Humidity" },
       "humidity1": { "name": "Humidity 1" },
@@ -92,6 +124,8 @@
       "leafwetness2": { "name": "Leaf Wetness 2" },
       "precipitation": { "name": "Daily Precipitation" },
       "precipitation_1h": { "name": "Precipitation (last 1h)" },
+      "precipitation_monthly": { "name": "Precipitation (month)" },
+      "precipitation_yearly": { "name": "Precipitation (year)" },
       "rainrate": { "name": "Rain Rate" },
       "snowheight": { "name": "Snow Height" },
       "soilmoisture1": { "name": "Soil Moisture 1" },

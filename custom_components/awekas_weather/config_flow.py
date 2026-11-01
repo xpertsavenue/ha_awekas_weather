@@ -1,163 +1,136 @@
 """Config flow for the AWEKAS Weather integration."""
 
-import logging
 from collections.abc import Mapping
+import logging
 from typing import Any
 
-import aiohttp
-import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_API_KEY, CONF_LANGUAGE
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_API_KEY
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
-    SelectSelector,
-    SelectSelectorConfig,
-    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
+import voluptuous as vol
 
-from .const import DOMAIN, LANGUAGES
+from .api import (
+    AwekasAuthError,
+    AwekasClient,
+    AwekasConnectionError,
+    AwekasError,
+    AwekasPlusNotActiveError,
+    AwekasQuotaError,
+)
+from .const import DEFAULT_TITLE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_API_KEY): str,
-        vol.Optional(CONF_LANGUAGE, default="de"): SelectSelector(
-            SelectSelectorConfig(
-                options=LANGUAGES,
-                mode=SelectSelectorMode.DROPDOWN,
-                translation_key="language",
-            )
-        ),
-    }
-)
+API_KEY_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
-REAUTH_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_API_KEY): str,
-    }
-)
+STEP_USER_DATA_SCHEMA = vol.Schema({vol.Required(CONF_API_KEY): API_KEY_SELECTOR})
 
-
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validiert den API-Key durch einen Test-Aufruf an die AWEKAS API."""
-
-    session = async_get_clientsession(hass)
-
-    api_key = data[CONF_API_KEY]
-    lang = data.get(CONF_LANGUAGE, "de")
-    url = f"https://api.awekas.at/current.php?key={api_key}&lng={lang}"
-
-    try:
-        async with session.get(url, timeout=10) as response:
-            if response.status != 200:
-                raise CannotConnect
-
-            res_data = await response.json()
-
-            # 1. 'error'-Key sicher abrufen. Wenn nicht vorhanden oder None/0/False/"" -> error_val ist None/Falsy
-            error_val = res_data.get("error")
-
-            # 2. Nur wenn 'error' tatsächlich Inhalt hat (also nicht None, False oder leer ist)
-            if error_val:
-                error_str = str(error_val).lower().strip()
-
-                # Falls der Wert doch mal aus Versehen als String 'none' oder 'null' geliefert wird
-                if error_str not in ("none", "null", ""):
-                    _LOGGER.warning("AWEKAS API meldet Fehler: %s", error_val)
-
-                    # Prüfung auf ungültigen Key
-                    if "invalid" in error_str or "key" in error_str:
-                        raise InvalidAuth
-
-                    raise CannotConnect
-
-    except aiohttp.ClientError as err:
-        _LOGGER.error("AWEKAS Verbindungsfehler Details: %r", err)
-        # Fängt Netzwerkfehler (DNS, Offline, Timeout) ab
-        raise CannotConnect from err
-
-    # Titel aus den ersten 5 Zeichen des API-Keys generieren
-    api_prefix = api_key[:5]
-    return {"title": f"AWEKAS ({api_prefix})"}
+REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_API_KEY): API_KEY_SELECTOR})
 
 
 class AwekasConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AWEKAS Weather."""
 
     VERSION = 1
+    MINOR_VERSION = 3
 
-    async def async_step_user(self, user_input=None) -> ConfigFlowResult:
-        """Erster Schritt bei der manuellen Einrichtung durch den Nutzer."""
-        errors = {}
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle the initial setup by the user."""
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            await self.async_set_unique_id(user_input[CONF_API_KEY])
-            self._abort_if_unique_id_configured()
+            self._async_abort_entries_match({CONF_API_KEY: user_input[CONF_API_KEY]})
 
-            try:
-                info = await validate_input(self.hass, user_input)
-
+            errors, station = await self._async_validate_input(user_input)
+            if station is not None:
+                await self.async_set_unique_id(str(station["id"]))
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=info["title"],
-                    data=user_input,
+                    title=station.get("location") or DEFAULT_TITLE, data=user_input
                 )
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unerwarteter Fehler bei der Validierung")
-                errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_USER_DATA_SCHEMA, user_input
+            ),
             errors=errors,
         )
 
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
-        """Startet den Re-Auth-Flow."""
-        return await self.async_step_reauth_confirm(entry_data)
+        """Start the re-authentication flow."""
+        return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Behandelt die erneute Eingabe des API-Keys bei Re-Authentifizierung."""
-        errors = {}
+        """Ask the user for a new API key."""
+        errors: dict[str, str] = {}
         reauth_entry = self._get_reauth_entry()
 
         if user_input is not None:
-            try:
-                # Kombiniere alte Daten mit neuem API-Key
-                test_data = {**reauth_entry.data, **user_input}
-                await validate_input(self.hass, test_data)
-
-                return self.async_update_reload_and_abort(
-                    reauth_entry,
-                    data=test_data,
+            errors, station = await self._async_validate_input(
+                {**reauth_entry.data, **user_input}
+            )
+            if station is not None:
+                unique_id = str(station["id"])
+                # Entries created before the station API was used are
+                # identified by their API key
+                identified_by_key = (
+                    reauth_entry.unique_id == reauth_entry.data[CONF_API_KEY]
                 )
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unerwarteter Fehler bei Re-Auth")
-                errors["base"] = "unknown"
+                if not identified_by_key and reauth_entry.unique_id != unique_id:
+                    return self.async_abort(reason="wrong_station")
+                if any(
+                    entry.unique_id == unique_id
+                    and entry.entry_id != reauth_entry.entry_id
+                    for entry in self._async_current_entries(include_ignore=False)
+                ):
+                    return self.async_abort(reason="already_configured")
+                return self.async_update_reload_and_abort(
+                    reauth_entry, unique_id=unique_id, data_updates=user_input
+                )
 
         return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=REAUTH_SCHEMA,
-            errors=errors,
+            step_id="reauth_confirm", data_schema=REAUTH_SCHEMA, errors=errors
         )
 
+    async def _async_validate_input(
+        self, data: Mapping[str, Any]
+    ) -> tuple[dict[str, str], dict[str, Any] | None]:
+        """Test the API key and return the form errors and the station data."""
+        client = AwekasClient(
+            async_get_clientsession(self.hass),
+            data[CONF_API_KEY],
+        )
+        try:
+            await client.async_get_current()
+            station = (await client.async_get_station()).get("station") or {}
+        except AwekasAuthError:
+            return {"base": "invalid_auth"}, None
+        except AwekasPlusNotActiveError:
+            return {"base": "awekas_plus_not_active"}, None
+        except AwekasQuotaError:
+            return {"base": "quota_exceeded"}, None
+        except AwekasConnectionError:
+            return {"base": "cannot_connect"}, None
+        except AwekasError as err:
+            _LOGGER.warning("AWEKAS API reported an error: %s", err)
+            return {"base": "cannot_connect"}, None
+        except Exception:
+            _LOGGER.exception("Unexpected error while validating the API key")
+            return {"base": "unknown"}, None
 
-class CannotConnect(Exception):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidAuth(Exception):
-    """Error to indicate there is invalid auth."""
+        if "id" not in station:
+            _LOGGER.warning("The AWEKAS station API returned no station ID")
+            return {"base": "cannot_connect"}, None
+        return {}, station

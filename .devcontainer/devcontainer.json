@@ -6,47 +6,58 @@
         "context": ".."
     },
     "mounts": [
-        "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
-        // comment if you don't have any .ssh directory which allows you to use ssh keys for git operations
+        "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+        // Uncomment to use your SSH keys for git operations inside the container
         //"source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
-        // some UI card useful for development and testing. Uncomment and adapt the path if you have some
-        // "source=${localEnv:HOME}/<directory>/xxx-ui-card/dist,target=/workspace/config/www/community/xxx-ui-card,type=bind",
+        // Mount a UI card for development and testing, adapt the path
+        //"source=${localEnv:HOME}/<directory>/xxx-ui-card/dist,target=/workspace/config/www/community/xxx-ui-card,type=bind"
     ],
     "customizations": {
         "vscode": {
             "extensions": [
-                // Python utils
+                // Python
                 "ms-python.python",
-                //"ms-python.pylint",
-                "ms-python.isort",
-                "ms-python.black-formatter",
-                // Github utils
+                "ms-python.debugpy",
+                "charliermarsh.ruff",
+                // GitHub
                 "github.copilot",
                 "github.copilot-chat",
                 "donjayamanne.githistory",
                 "waderyan.gitblame",
-                // usefull utils
+                // Utilities
                 "ferrierbenjamin.fold-unfold-all-icone",
                 "vscode.markdown-math",
                 "yzhang.markdown-all-in-one",
-                "bierner.markdown-mermaid",
-                "charliermarsh.ruff"
+                "bierner.markdown-mermaid"
             ],
             "settings": {
-                "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+                "python.defaultInterpreterPath": "/opt/venv/bin/python",
+                "python.testing.pytestEnabled": true,
                 "editor.formatOnSave": true,
-                "editor.defaultFormatter": "ms-python.black-formatter",
                 "[python]": {
-                    "editor.defaultFormatter": "ms-python.black-formatter",
+                    "editor.defaultFormatter": "charliermarsh.ruff",
                     "editor.codeActionsOnSave": {
-                        "source.organizeImports": "explicit"
+                        "source.organizeImports": "explicit",
+                        "source.fixAll.ruff": "explicit"
                     }
-                },
-                "isort.args": ["--profile", "black"]
+                }
             }
         }
     },
-    "appPort": ["8123:8123"],
+    // Login shells (terminals, tasks, postCreateCommand) reset PATH via
+    // /etc/profile, so the virtualenv of the image has to be added here again
+    "remoteEnv": {
+        "VIRTUAL_ENV": "/opt/venv",
+        "PATH": "/opt/venv/bin:${containerEnv:PATH}"
+    },
+    // 8123: Home Assistant UI, 5678: debugpy
+    // Published by Docker (not forwarded by VS Code), so the ports stay
+    // reachable when the VS Code tunnel drops, e.g. with Docker in WSL
+    "appPort": ["8123:8123", "5678:5678"],
     "postCreateCommand": "bash /workspace/scripts/setup.sh",
+    // Start Home Assistant in the background on every container start.
+    // setsid/nohup keep it running after the command returns.
+    // Console output: /tmp/ha-console.log
+    "postStartCommand": "setsid nohup bash /workspace/scripts/ha.sh start > /tmp/ha-console.log 2>&1 &",
     "remoteUser": "vscode"
 }

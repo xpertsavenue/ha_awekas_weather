@@ -1,0 +1,64 @@
+{
+  "current": {
+    "temperature": 14.5,
+    "dewpoint": 9,
+    "windchill": 14.5,
+    "wetbulbtemperature": 11.3,
+    "indoortemperature": 22,
+    "humidity": 69,
+    "indoorhumidity": 44,
+    "airpress_rel": 1025.8,
+    "tendency": -1,
+    "precipitation": 1.2,
+    "rainrate": 0,
+    "windspeed": 6.4,
+    "gustspeed": 9.7,
+    "winddirection": 264,
+    "uv": 0,
+    "solar": 17,
+    "itsraining": 0,
+    "brightness": 12000,
+    "suntime": 3.5,
+    "soilmoisture1": 9,
+    "temp1": null
+  },
+  "1h": {
+    "precipitation_1h": 0.3
+  },
+  "day": {
+    "temp_min": 8.1,
+    "temp_max": 16.2,
+    "temp_max_ts": 1767272400,
+    "windspeed_max": 20.5,
+    "rainrate_max": 1.5,
+    "precipitation_24h": 2.0,
+    "airquality_pm2": 12.1
+  },
+  "forecast": {
+    "day0": {
+      "fc_code": 1003,
+      "fc_text": "Teilweise bewölkt",
+      "fc_temp_min": 7,
+      "fc_temp_max": 15,
+      "fc_rainsum": 0.5,
+      "fc_rain_possibility": 20
+    },
+    "day1": {
+      "fc_code": 1189,
+      "fc_text": "Mäßiger Regen",
+      "fc_temp_min": 6,
+      "fc_temp_max": 12,
+      "fc_rainsum": 8.1,
+      "fc_rain_possibility": 85
+    },
+    "day2": {
+      "fc_code": 9999,
+      "fc_text": "Unbekannt",
+      "fc_temp_min": 5,
+      "fc_temp_max": 11,
+      "fc_rainsum": 0,
+      "fc_rain_possibility": 5
+    }
+  },
+  "error": null
+}
