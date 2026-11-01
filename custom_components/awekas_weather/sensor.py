@@ -1,563 +1,377 @@
 """Sensor platform for AWEKAS Weather integration."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
-from datetime import timedelta
-import logging
+from dataclasses import asdict, dataclass
+from datetime import date, datetime
+from typing import Any, Literal, Self
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
-    RestoreSensor,
 )
-from homeassistant.components.utility_meter.sensor import UtilityMeterSensor
-from homeassistant.components.utility_meter.const import DAILY, MONTHLY, YEARLY
 from homeassistant.const import (
+    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     DEGREE,
+    LIGHT_LUX,
     PERCENTAGE,
+    EntityCategory,
     UnitOfIrradiance,
     UnitOfLength,
     UnitOfPressure,
     UnitOfSpeed,
     UnitOfTemperature,
+    UnitOfTime,
     UnitOfVolumetricFlux,
 )
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
 from .coordinator import AwekasConfigEntry, AwekasDataUpdateCoordinator
-
-_LOGGER = logging.getLogger(__name__)
+from .entity import AwekasEntity, sensor_active
 
 PARALLEL_UPDATES = 0
 
-try:
-    from homeassistant.const import UnitOfDensity
+ATTR_TIMESTAMP = "timestamp"
 
-    PM_UNIT = UnitOfDensity.MICROGRAMS_PER_CUBIC_METER
-except ImportError:
+type ValueFn = Callable[[dict[str, Any]], Any]
+
+
+def _value(section: str, key: str) -> ValueFn:
+    """Return a function reading one value of a section of an API response."""
+    return lambda data: (data.get(section) or {}).get(key)
+
+
+def _timestamp(section: str, key: str) -> ValueFn:
+    """Return a function reading a Unix timestamp as datetime."""
+
+    def _read(data: dict[str, Any]) -> datetime | None:
+        value = (data.get(section) or {}).get(key)
+        if not isinstance(value, int | float):
+            return None
+        return dt_util.utc_from_timestamp(value)
+
+    return _read
+
+
+def _date(data: dict[str, Any]) -> date | None:
+    """Return the expiry date of the Stationsweb subscription."""
+    stationsweb = data.get("stationsweb") or {}
+    if not stationsweb.get("enabled"):
+        return None
     try:
-        from homeassistant.const import UnitOfConcentrationMass
+        return date.fromisoformat(str(stationsweb.get("period")))
+    except ValueError:
+        return None
 
-        PM_UNIT = UnitOfConcentrationMass.MICROGRAMS_PER_CUBIC_METER
-    except ImportError:
-        # Sehr alte HA-Versionen
-        PM_UNIT = "μg/m³"
+
+def _as_float(value: Any) -> float | None:
+    """Convert an API value to float."""
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None
 
 
 @dataclass(frozen=True, kw_only=True)
 class AwekasSensorEntityDescription(SensorEntityDescription):
-    """Klasse zur Beschreibung von AWEKAS Sensoren."""
+    """Describes an AWEKAS sensor."""
 
-    value_fn: Callable[[dict], float | int | str | None]
+    value_fn: ValueFn
+    # Key in the 'sensorstatus' section of the station API
+    status_key: str | None = None
+    # Time of a daily minimum or maximum, shown as attribute
+    timestamp_fn: ValueFn | None = None
+    # Response the value is read from: current data or station data
+    source: Literal["current", "station"] = "current"
+    available_when_stale: bool = False
 
 
-# Definition aller regulären Sensoren aus 'current', '1h' und 'day'
+# Units, device and state classes of the measured quantities
+_TEMPERATURE: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfTemperature.CELSIUS,
+    "device_class": SensorDeviceClass.TEMPERATURE,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_HUMIDITY: dict[str, Any] = {
+    "native_unit_of_measurement": PERCENTAGE,
+    "device_class": SensorDeviceClass.HUMIDITY,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_PRESSURE: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfPressure.HPA,
+    "device_class": SensorDeviceClass.PRESSURE,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+# Soil moisture is measured as soil water tension
+_SOIL_MOISTURE: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfPressure.CBAR,
+    "device_class": SensorDeviceClass.PRESSURE,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_WIND_SPEED: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfSpeed.KILOMETERS_PER_HOUR,
+    "device_class": SensorDeviceClass.WIND_SPEED,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_WIND_DIRECTION: dict[str, Any] = {
+    "native_unit_of_measurement": DEGREE,
+    "device_class": SensorDeviceClass.WIND_DIRECTION,
+    "state_class": SensorStateClass.MEASUREMENT_ANGLE,
+}
+_PRECIPITATION: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfLength.MILLIMETERS,
+    "device_class": SensorDeviceClass.PRECIPITATION,
+}
+_RAIN_RATE: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfVolumetricFlux.MILLIMETERS_PER_HOUR,
+    "device_class": SensorDeviceClass.PRECIPITATION_INTENSITY,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_IRRADIANCE: dict[str, Any] = {
+    "native_unit_of_measurement": UnitOfIrradiance.WATTS_PER_SQUARE_METER,
+    "device_class": SensorDeviceClass.IRRADIANCE,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_ILLUMINANCE: dict[str, Any] = {
+    "native_unit_of_measurement": LIGHT_LUX,
+    "device_class": SensorDeviceClass.ILLUMINANCE,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_PARTICULATE: dict[str, Any] = {
+    "native_unit_of_measurement": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_PLAIN: dict[str, Any] = {"state_class": SensorStateClass.MEASUREMENT}
+
+
+def _current(
+    key: str,
+    kind: dict[str, Any],
+    status_key: str | None,
+    *,
+    section: str = "current",
+    **kwargs: Any,
+) -> AwekasSensorEntityDescription:
+    """Describe a current value."""
+    return AwekasSensorEntityDescription(
+        key=key,
+        translation_key=key,
+        value_fn=_value(section, key),
+        status_key=status_key,
+        **kind,
+        **kwargs,
+    )
+
+
+def _day(
+    api_key: str,
+    kind: dict[str, Any],
+    status_key: str | None,
+    *,
+    timestamp_key: str | None = "",
+    enabled: bool = False,
+    **kwargs: Any,
+) -> AwekasSensorEntityDescription:
+    """Describe a daily statistic, disabled by default.
+
+    The time of the value is read from '<api_key>_ts' unless another
+    timestamp_key is given, None means the value has no time.
+    """
+    if timestamp_key == "":
+        timestamp_key = f"{api_key}_ts"
+    return AwekasSensorEntityDescription(
+        key=f"day_{api_key}",
+        translation_key=f"day_{api_key}",
+        value_fn=_value("day", api_key),
+        timestamp_fn=_timestamp("day", timestamp_key) if timestamp_key else None,
+        status_key=status_key,
+        entity_registry_enabled_default=enabled,
+        **kind,
+        **kwargs,
+    )
+
+
+PRECIPITATION_TODAY = _value("current", "precipitation")
+
 SENSOR_TYPES: tuple[AwekasSensorEntityDescription, ...] = (
-    # --- Temp / Taupunkt ---
-    AwekasSensorEntityDescription(
-        key="temperature",
-        translation_key="temperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("temperature"),
-    ),
-    AwekasSensorEntityDescription(
-        key="dewpoint",
-        translation_key="dewpoint",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("dewpoint"),
-    ),
-    AwekasSensorEntityDescription(
-        key="windchill",
-        translation_key="windchill",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("windchill"),
-    ),
-    AwekasSensorEntityDescription(
-        key="wetbulbtemperature",
-        translation_key="wetbulbtemperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("wetbulbtemperature"),
-    ),
-    AwekasSensorEntityDescription(
-        key="indoortemperature",
-        translation_key="indoortemperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("indoortemperature"),
-    ),
-    # --- Luftfeuchtigkeit ---
-    AwekasSensorEntityDescription(
-        key="humidity",
-        translation_key="humidity",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("humidity"),
-    ),
-    AwekasSensorEntityDescription(
-        key="indoorhumidity",
-        translation_key="indoorhumidity",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("indoorhumidity"),
-    ),
-    # --- Luftdruck ---
-    AwekasSensorEntityDescription(
-        key="airpress_rel",
-        translation_key="airpress_rel",
-        native_unit_of_measurement=UnitOfPressure.HPA,
-        device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("airpress_rel"),
-    ),
-    AwekasSensorEntityDescription(
-        key="tendency",
-        translation_key="tendency",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("tendency"),
-    ),
-    # --- Niederschlag ---
-    AwekasSensorEntityDescription(
-        key="precipitation",
-        translation_key="precipitation",
-        native_unit_of_measurement=UnitOfLength.MILLIMETERS,
-        device_class=SensorDeviceClass.PRECIPITATION,
+    # Temperature / dew point
+    _current("temperature", _TEMPERATURE, "temperature"),
+    _current("dewpoint", _TEMPERATURE, "temperature"),
+    _current("windchill", _TEMPERATURE, "temperature"),
+    _current("wetbulbtemperature", _TEMPERATURE, "temperature"),
+    _current("indoortemperature", _TEMPERATURE, "indoortemperature"),
+    # Humidity
+    _current("humidity", _HUMIDITY, "humidity"),
+    _current("indoorhumidity", _HUMIDITY, "indoorhumidity"),
+    # Air pressure, the tendency is -2 (high falling) ... 2 (high rising)
+    _current("airpress_rel", _PRESSURE, "airpressure"),
+    _current("tendency", _PLAIN, "airpressure"),
+    # Precipitation since midnight station time
+    _current(
+        "precipitation",
+        _PRECIPITATION,
+        "precipitation",
         state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda data: data.get("current", {}).get("precipitation"),
     ),
-    AwekasSensorEntityDescription(
-        key="rainrate",
-        translation_key="rainrate",
-        native_unit_of_measurement=UnitOfVolumetricFlux.MILLIMETERS_PER_HOUR,
-        device_class=SensorDeviceClass.PRECIPITATION_INTENSITY,
+    _current("rainrate", _RAIN_RATE, "rainrate"),
+    # Rolling window, the value can decrease at any time
+    _current(
+        "precipitation_1h",
+        _PRECIPITATION,
+        "precipitation",
+        section="1h",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("rainrate"),
     ),
-    AwekasSensorEntityDescription(
-        key="precipitation_1h",
-        translation_key="precipitation_1h",
-        native_unit_of_measurement=UnitOfLength.MILLIMETERS,
-        device_class=SensorDeviceClass.PRECIPITATION,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda data: data.get("1h", {}).get("precipitation_1h"),
+    # Wind
+    _current("windspeed", _WIND_SPEED, "wind"),
+    _current("gustspeed", _WIND_SPEED, "wind"),
+    _current("winddirection", _WIND_DIRECTION, "wind"),
+    # Sun and radiation
+    _current("uv", _PLAIN, "uv"),
+    _current("solar", _IRRADIANCE, "solar"),
+    _current("brightness", _ILLUMINANCE, None),
+    _current(
+        "suntime",
+        _PLAIN,
+        None,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        device_class=SensorDeviceClass.DURATION,
     ),
-    # --- Wind ---
-    AwekasSensorEntityDescription(
-        key="windspeed",
-        translation_key="windspeed",
-        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
-        device_class=SensorDeviceClass.WIND_SPEED,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("windspeed"),
-    ),
-    AwekasSensorEntityDescription(
-        key="gustspeed",
-        translation_key="gustspeed",
-        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
-        device_class=SensorDeviceClass.WIND_SPEED,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("gustspeed"),
-    ),
-    AwekasSensorEntityDescription(
-        key="winddirection",
-        translation_key="winddirection",
-        native_unit_of_measurement=DEGREE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("winddirection"),
-    ),
-    # --- Sonne & Strahlung ---
-    AwekasSensorEntityDescription(
-        key="uv",
-        translation_key="uv",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("uv"),
-    ),
-    AwekasSensorEntityDescription(
-        key="solar",
-        translation_key="solar",
-        native_unit_of_measurement=UnitOfIrradiance.WATTS_PER_SQUARE_METER,
-        device_class=SensorDeviceClass.IRRADIANCE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("solar"),
-    ),
-    AwekasSensorEntityDescription(
-        key="brightness",
-        translation_key="brightness",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("brightness"),
-    ),
-    AwekasSensorEntityDescription(
-        key="suntime",
-        translation_key="suntime",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("suntime"),
-    ),
-    # --- Schnee & Zusatzkanäle (Optional) ---
-    AwekasSensorEntityDescription(
-        key="snowheight",
-        translation_key="snowheight",
+    # Snow and additional channels
+    _current(
+        "snowheight",
+        _PLAIN,
+        None,
         native_unit_of_measurement=UnitOfLength.CENTIMETERS,
         device_class=SensorDeviceClass.DISTANCE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("snowheight"),
     ),
-    AwekasSensorEntityDescription(
-        key="temp1",
-        translation_key="temp1",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("temp1"),
+    *(_current(f"temp{i}", _TEMPERATURE, f"soiltemp{i}") for i in range(1, 5)),
+    *(_current(f"humidity{i}", _HUMIDITY, f"humidity{i}") for i in range(1, 5)),
+    *(
+        _current(f"soilmoisture{i}", _SOIL_MOISTURE, f"soilmoisture{i}")
+        for i in range(1, 5)
     ),
-    AwekasSensorEntityDescription(
-        key="temp2",
-        translation_key="temp2",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("temp2"),
+    *(_current(f"leafwetness{i}", _PLAIN, f"leafwetness{i}") for i in (1, 2)),
+    # Air quality
+    _current(
+        "airquality_pm1", _PARTICULATE, "airquality", device_class=SensorDeviceClass.PM1
     ),
-    AwekasSensorEntityDescription(
-        key="temp3",
-        translation_key="temp3",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("temp3"),
-    ),
-    AwekasSensorEntityDescription(
-        key="temp4",
-        translation_key="temp4",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("temp4"),
-    ),
-    AwekasSensorEntityDescription(
-        key="humidity1",
-        translation_key="humidity1",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("humidity1"),
-    ),
-    AwekasSensorEntityDescription(
-        key="humidity2",
-        translation_key="humidity2",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("humidity2"),
-    ),
-    AwekasSensorEntityDescription(
-        key="humidity3",
-        translation_key="humidity3",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("humidity3"),
-    ),
-    AwekasSensorEntityDescription(
-        key="humidity4",
-        translation_key="humidity4",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("humidity4"),
-    ),
-    AwekasSensorEntityDescription(
-        key="soilmoisture1",
-        translation_key="soilmoisture1",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("soilmoisture1"),
-    ),
-    AwekasSensorEntityDescription(
-        key="soilmoisture2",
-        translation_key="soilmoisture2",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("soilmoisture2"),
-    ),
-    AwekasSensorEntityDescription(
-        key="soilmoisture3",
-        translation_key="soilmoisture3",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("soilmoisture3"),
-    ),
-    AwekasSensorEntityDescription(
-        key="soilmoisture4",
-        translation_key="soilmoisture4",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("soilmoisture4"),
-    ),
-    AwekasSensorEntityDescription(
-        key="leafwetness1",
-        translation_key="leafwetness1",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("leafwetness1"),
-    ),
-    AwekasSensorEntityDescription(
-        key="leafwetness2",
-        translation_key="leafwetness2",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("leafwetness2"),
-    ),
-    # --- Luftqualität ---
-    AwekasSensorEntityDescription(
-        key="airquality_pm1",
-        translation_key="airquality_pm1",
-        native_unit_of_measurement=PM_UNIT,
-        device_class=SensorDeviceClass.PM1,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("airquality_pm1"),
-    ),
-    AwekasSensorEntityDescription(
-        key="airquality_pm2",
-        translation_key="airquality_pm2",
-        native_unit_of_measurement=PM_UNIT,
+    _current(
+        "airquality_pm2",
+        _PARTICULATE,
+        "airquality",
         device_class=SensorDeviceClass.PM25,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("airquality_pm2"),
     ),
-    AwekasSensorEntityDescription(
-        key="airquality_pm10",
-        translation_key="airquality_pm10",
-        native_unit_of_measurement=PM_UNIT,
+    _current(
+        "airquality_pm10",
+        _PARTICULATE,
+        "airquality",
         device_class=SensorDeviceClass.PM10,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("current", {}).get("airquality_pm10"),
     ),
-    # =========================================================================
-    # --- Tagesstatistiken (Day Stats) - Standardmäßig DEAKTIVIERT ---
-    # =========================================================================
-    # --- Temperatur Tag ---
-    AwekasSensorEntityDescription(
-        key="day_temp_min",
-        translation_key="day_temp_min",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
+    # Daily statistics
+    _day("temp_min", _TEMPERATURE, "temperature"),
+    _day("temp_max", _TEMPERATURE, "temperature"),
+    _day("intemp_min", _TEMPERATURE, "indoortemperature"),
+    _day("intemp_max", _TEMPERATURE, "indoortemperature"),
+    _day("dewpoint_min", _TEMPERATURE, "temperature"),
+    _day("dewpoint_max", _TEMPERATURE, "temperature"),
+    _day("hum_min", _HUMIDITY, "humidity"),
+    _day("hum_max", _HUMIDITY, "humidity"),
+    _day("inhum_min", _HUMIDITY, "indoorhumidity"),
+    _day("inhum_max", _HUMIDITY, "indoorhumidity"),
+    _day("airp_rel_min", _PRESSURE, "airpressure"),
+    _day("airp_rel_max", _PRESSURE, "airpressure"),
+    _day("windspeed_min", _WIND_SPEED, "wind"),
+    _day("windspeed_max", _WIND_SPEED, "wind"),
+    _day("winddir_max", _WIND_DIRECTION, "wind", timestamp_key="windspeed_max_ts"),
+    _day("gustspeed_min", _WIND_SPEED, "wind"),
+    _day("gustspeed_max", _WIND_SPEED, "wind"),
+    _day("gustdir_max", _WIND_DIRECTION, "wind", timestamp_key="gustspeed_max_ts"),
+    _day("rainrate_max", _RAIN_RATE, "rainrate", enabled=True),
+    # Rolling window, the value can decrease at any time
+    _day(
+        "precipitation_24h",
+        _PRECIPITATION,
+        "precipitation",
+        timestamp_key=None,
+        enabled=True,
         state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("temp_min"),
     ),
-    AwekasSensorEntityDescription(
-        key="day_temp_max",
-        translation_key="day_temp_max",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("temp_max"),
+    _day("solar_max", _IRRADIANCE, "solar"),
+    _day("uv_max", _PLAIN, "uv"),
+    _day("brightness_max", _ILLUMINANCE, None),
+    # 24 hour averages
+    _day(
+        "airquality_pm1",
+        _PARTICULATE,
+        "airquality",
+        timestamp_key=None,
+        device_class=SensorDeviceClass.PM1,
     ),
-    AwekasSensorEntityDescription(
-        key="day_intemp_min",
-        translation_key="day_intemp_min",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("intemp_min"),
+    _day(
+        "airquality_pm2",
+        _PARTICULATE,
+        "airquality",
+        timestamp_key=None,
+        device_class=SensorDeviceClass.PM25,
     ),
-    AwekasSensorEntityDescription(
-        key="day_intemp_max",
-        translation_key="day_intemp_max",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("intemp_max"),
+    _day(
+        "airquality_pm10",
+        _PARTICULATE,
+        "airquality",
+        timestamp_key=None,
+        device_class=SensorDeviceClass.PM10,
     ),
-    # --- Taupunkt Tag ---
+    # Diagnostics
     AwekasSensorEntityDescription(
-        key="day_dewpoint_min",
-        translation_key="day_dewpoint_min",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("dewpoint_min"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_dewpoint_max",
-        translation_key="day_dewpoint_max",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("dewpoint_max"),
-    ),
-    # --- Luftfeuchtigkeit Tag ---
-    AwekasSensorEntityDescription(
-        key="day_hum_min",
-        translation_key="day_hum_min",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("hum_min"),
+        key="datatimestamp",
+        translation_key="datatimestamp",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_timestamp("current", "datatimestamp"),
+        available_when_stale=True,
     ),
     AwekasSensorEntityDescription(
-        key="day_hum_max",
-        translation_key="day_hum_max",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("hum_max"),
+        key="stationsweb_expiry",
+        translation_key="stationsweb_expiry",
+        device_class=SensorDeviceClass.DATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_date,
+        source="station",
+        available_when_stale=True,
     ),
-    AwekasSensorEntityDescription(
-        key="day_inhum_min",
-        translation_key="day_inhum_min",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("inhum_min"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_inhum_max",
-        translation_key="day_inhum_max",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.HUMIDITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("inhum_max"),
-    ),
-    # --- Luftdruck Tag ---
-    AwekasSensorEntityDescription(
-        key="day_airp_rel_min",
-        translation_key="day_airp_rel_min",
-        native_unit_of_measurement=UnitOfPressure.HPA,
-        device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("airp_rel_min"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_airp_rel_max",
-        translation_key="day_airp_rel_max",
-        native_unit_of_measurement=UnitOfPressure.HPA,
-        device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("airp_rel_max"),
-    ),
-    # --- Wind & Böen Tag ---
-    AwekasSensorEntityDescription(
-        key="day_windspeed_min",
-        translation_key="day_windspeed_min",
-        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
-        device_class=SensorDeviceClass.WIND_SPEED,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("windspeed_min"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_windspeed_max",
-        translation_key="day_windspeed_max",
-        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
-        device_class=SensorDeviceClass.WIND_SPEED,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("windspeed_max"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_winddir_max",
-        translation_key="day_winddir_max",
-        native_unit_of_measurement=DEGREE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("winddir_max"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_gustspeed_min",
-        translation_key="day_gustspeed_min",
-        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
-        device_class=SensorDeviceClass.WIND_SPEED,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("gustspeed_min"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_gustspeed_max",
-        translation_key="day_gustspeed_max",
-        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
-        device_class=SensorDeviceClass.WIND_SPEED,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("gustspeed_max"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_gustdir_max",
-        translation_key="day_gustdir_max",
-        native_unit_of_measurement=DEGREE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("gustdir_max"),
-    ),
-    # --- Niederschlag Tag ---
-    AwekasSensorEntityDescription(
-        key="day_rainrate_max",
-        translation_key="day_rainrate_max",
-        native_unit_of_measurement=UnitOfVolumetricFlux.MILLIMETERS_PER_HOUR,
-        device_class=SensorDeviceClass.PRECIPITATION_INTENSITY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.get("day", {}).get("rainrate_max"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_precipitation_24h",
-        translation_key="day_precipitation_24h",
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class AwekasPrecipitationTotalEntityDescription(SensorEntityDescription):
+    """Describes a sensor summing up the daily precipitation over a period."""
+
+    period_fn: Callable[[datetime], str]
+
+
+PRECIPITATION_TOTAL_TYPES: tuple[AwekasPrecipitationTotalEntityDescription, ...] = (
+    AwekasPrecipitationTotalEntityDescription(
+        key="precipitation_monthly",
+        translation_key="precipitation_monthly",
         native_unit_of_measurement=UnitOfLength.MILLIMETERS,
         device_class=SensorDeviceClass.PRECIPITATION,
         state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda data: data.get("day", {}).get("precipitation_24h"),
+        suggested_display_precision=1,
+        period_fn=lambda now: f"{now.year}-{now.month:02d}",
     ),
-    # --- Sonne / UV Tag ---
-    AwekasSensorEntityDescription(
-        key="day_solar_max",
-        translation_key="day_solar_max",
-        native_unit_of_measurement=UnitOfIrradiance.WATTS_PER_SQUARE_METER,
-        device_class=SensorDeviceClass.IRRADIANCE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("solar_max"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_uv_max",
-        translation_key="day_uv_max",
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("uv_max"),
-    ),
-    AwekasSensorEntityDescription(
-        key="day_brightness_max",
-        translation_key="day_brightness_max",
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("day", {}).get("brightness_max"),
+    AwekasPrecipitationTotalEntityDescription(
+        key="precipitation_yearly",
+        translation_key="precipitation_yearly",
+        native_unit_of_measurement=UnitOfLength.MILLIMETERS,
+        device_class=SensorDeviceClass.PRECIPITATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        period_fn=lambda now: str(now.year),
     ),
 )
 
@@ -568,85 +382,22 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up AWEKAS sensors based on a config entry."""
-    coordinator: AwekasDataUpdateCoordinator = entry.runtime_data
+    coordinator = entry.runtime_data
 
-    if not coordinator.data:
-        return
-
-    entities: list[AwekasSensor] = []
-    precipitation_sensor_instance: AwekasSensor | None = None
-
-    # 1. Nur Entitäten anlegen, deren Wert nicht None ist
-    for description in SENSOR_TYPES:
-        if description.value_fn(coordinator.data) is not None:
-            sensor = AwekasSensor(coordinator, description)
-            entities.append(sensor)
-
-            # Objekt-Referenz für den Regensensor merken
-            if description.key == "precipitation":
-                precipitation_sensor_instance = sensor
-
-    # 2. Registry von nicht mehr aktiven Sensoren bereinigen
-    ent_reg = er.async_get(hass)
-    active_keys = {
-        description.key
-        for description in SENSOR_TYPES
-        if description.value_fn(coordinator.data) is not None
-    }
-
-    registered_entities = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    for reg_entity in registered_entities:
-        unique_id_suffix = reg_entity.unique_id.removeprefix(f"{entry.entry_id}_")
-        if (
-            reg_entity.domain == "sensor"
-            and not unique_id_suffix.endswith(("_monthly", "_yearly"))
-            and unique_id_suffix not in active_keys
-        ):
-            ent_reg.async_remove(reg_entity.entity_id)
-
-    # 3. Basissensoren in Home Assistant registrieren
-    # WICHTIG: Erst JETZT weist HA den Objekten in 'entities' ihre echte entity_id zu!
+    entities: list[SensorEntity] = [
+        AwekasSensor(coordinator, description) for description in SENSOR_TYPES
+    ]
+    entities.extend(
+        AwekasPrecipitationTotalSensor(coordinator, description)
+        for description in PRECIPITATION_TOTAL_TYPES
+    )
     async_add_entities(entities)
 
-    # 4. Utility Meter anlegen, falls der Regensensor aktiv ist
-    if precipitation_sensor_instance is not None:
-        # Die entity_id wurde von HA beim async_add_entities automatisch am Objekt gesetzt:
-        real_entity_id = precipitation_sensor_instance.entity_id
 
-        # Fallback über die Registry, falls HA die entity_id im Objekt noch nicht geschrieben hat
-        if not real_entity_id:
-            precip_unique_id = f"{entry.entry_id}_precipitation"
-            real_entity_id = (
-                ent_reg.async_get_entity_id("sensor", DOMAIN, precip_unique_id)
-                or f"sensor.{DOMAIN}_precipitation"
-            )
-
-        utility_meters = [
-            AwekasUtilityMeterSensor(
-                coordinator=coordinator,
-                meter_type=MONTHLY,
-                meter_key="precipitation_monthly",
-                name="Niederschlag (Monat)",
-                source_entity_id=precipitation_sensor_instance.entity_id,
-            ),
-            AwekasUtilityMeterSensor(
-                coordinator=coordinator,
-                meter_type=YEARLY,
-                meter_key="precipitation_yearly",
-                name="Niederschlag (Jahr)",
-                source_entity_id=precipitation_sensor_instance.entity_id,
-            ),
-        ]
-
-        # Füge die Utility Meter als separaten Schritt hinzu
-        async_add_entities(utility_meters)
-
-
-class AwekasSensor(CoordinatorEntity[AwekasDataUpdateCoordinator], SensorEntity):
-    """Representation of an AWEKAS Sensor."""
+class AwekasSensor(AwekasEntity, SensorEntity):
+    """Representation of an AWEKAS sensor."""
 
     entity_description: AwekasSensorEntityDescription
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -654,175 +405,174 @@ class AwekasSensor(CoordinatorEntity[AwekasDataUpdateCoordinator], SensorEntity)
         description: AwekasSensorEntityDescription,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, description.key)
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.api_key)},
-            name=f"AWEKAS ({coordinator.api_key[:5]})",
-            manufacturer="AWEKAS",
-            model="Weather Station",
+        # Sensors the station does not have are created disabled. Without
+        # the sensor status of the station API, a missing value decides.
+        active = sensor_active(coordinator, description.status_key)
+        if active is False or (active is None and self.native_value is None):
+            self._attr_entity_registry_enabled_default = False
+
+    @property
+    def _data(self) -> dict[str, Any]:
+        if self.entity_description.source == "station":
+            return self.coordinator.station or {}
+        return self.coordinator.data
+
+    @property
+    def available(self) -> bool:
+        """Return if the station currently reports this value."""
+        return (
+            super().available
+            and self.native_value is not None
+            and (
+                self.entity_description.available_when_stale
+                or not self.coordinator.data_is_stale
+            )
         )
 
     @property
-    def native_value(self) -> float | int | str | None:
+    def native_value(self) -> Any:
         """Return the state of the sensor."""
-        if not self.coordinator.data:
+        return self.entity_description.value_fn(self._data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the time of a daily minimum or maximum."""
+        if self.entity_description.timestamp_fn is None:
             return None
-        return self.entity_description.value_fn(self.coordinator.data)
+        return {ATTR_TIMESTAMP: self.entity_description.timestamp_fn(self._data)}
 
 
-class AwekasAccumulatedSensor(RestoreSensor, SensorEntity):
-    """Accumulated Awekas precipitation sensor using native RestoreSensor and LTS support."""
+@dataclass
+class PrecipitationTotalStoredData(ExtraStoredData):
+    """Data needed to continue a precipitation total after a restart."""
 
-    _attr_has_entity_name = True
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_device_class = SensorDeviceClass.PRECIPITATION
-    _attr_native_unit_of_measurement = "mm"
+    total: float
+    last_daily: float | None
+    period: str | None
 
-    def __init__(
-        self,
-        coordinator,
-        sensor_key: str,
-        name: str,
-        source_entity_id: str,
-        reset_period: str,
-    ) -> None:
-        """Initialize the sensor."""
-        self.coordinator = coordinator
-        self._source_entity_id = source_entity_id
-        self._reset_period = reset_period
+    def as_dict(self) -> dict[str, Any]:
+        """Return a dict representation of the data."""
+        return asdict(self)
 
-        self._attr_name = name
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{sensor_key}"
-        self._attr_native_value = Decimal("0")
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.api_key)},
-            name=f"AWEKAS ({coordinator.api_key[:5]})",
-            manufacturer="AWEKAS",
-            model="Weather Station",
-        )
-
-    async def async_added_to_hass(self) -> None:
-        """Handle entity which will be added to Home Assistant."""
-        await super().async_added_to_hass()
-
-        # Hier wird der native Sensor-Wert (inkl. Typ und Einheit) aus dem Recorder geholt
-        if (last_sensor_data := await self.async_get_last_sensor_data()) is not None:
-            self._attr_native_value = last_sensor_data.native_value
-            self._attr_native_unit_of_measurement = (
-                last_sensor_data.native_unit_of_measurement
-            )
-        elif (last_state := await self.async_get_last_state()) is not None:
-            # Fallback falls keine Sensordaten vorliegen
-            try:
-                self._attr_native_value = float(last_state.state)
-            except ValueError:
-                self._attr_native_value = None
-
-        # Event-Listener für den Quell-Sensor registrieren
-        self.async_on_remove(
-            async_track_state_change_event(
-                self.hass, [self._source_entity_id], self._async_source_changed
-            )
-        )
-
-    async def _async_source_changed(self, event) -> None:
-        """Handle source updates and accumulate precipitation."""
-        new_state = event.data.get("new_state")
-        old_state = event.data.get("old_state")
-
-        if new_state is None or new_state.state in (None, "unknown", "unavailable"):
-            return
-
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self | None:
+        """Initialize the stored data from a dict."""
         try:
-            current_source_val = Decimal(new_state.state)
-        except InvalidOperation, TypeError:
-            return
-
-        old_source_val = Decimal("0")
-        if old_state is not None and old_state.state not in (
-            None,
-            "unknown",
-            "unavailable",
-        ):
-            try:
-                old_source_val = Decimal(old_state.state)
-            except InvalidOperation, TypeError:
-                pass
-
-        if current_source_val < old_source_val:
-            delta = current_source_val
-        else:
-            delta = current_source_val - old_source_val
-
-        if delta > 0:
-            if self._attr_native_value is None:
-                self._attr_native_value = Decimal("0")
-
-            self._attr_native_value += delta
-            self.async_write_ha_state()
+            return cls(
+                total=float(data["total"]),
+                last_daily=_as_float(data["last_daily"]),
+                period=data["period"],
+            )
+        except KeyError, TypeError, ValueError:
+            return None
 
 
-class AwekasUtilityMeterSensor(UtilityMeterSensor):
-    """Representation of an AWEKAS Utility Meter Sensor."""
+class AwekasPrecipitationTotalSensor(AwekasEntity, RestoreEntity, SensorEntity):
+    """Sum of the daily precipitation of the station over a month or year.
 
-    _attr_has_entity_name = True
-    _attr_native_unit_of_measurement = "mm"
-    _attr_device_class = SensorDeviceClass.PRECIPITATION
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    The station only reports the precipitation since midnight station time.
+    Every increase of that value is added to the total, which starts again
+    from zero when a new period begins in the time zone of the station.
+    """
+
+    entity_description: AwekasPrecipitationTotalEntityDescription
 
     def __init__(
         self,
         coordinator: AwekasDataUpdateCoordinator,
-        meter_type: str,
-        meter_key: str,
-        name: str,
-        source_entity_id: str,
+        description: AwekasPrecipitationTotalEntityDescription,
     ) -> None:
-        """Initialize the utility meter sensor."""
-        # WICHTIG: Die Mutterklasse erwartet exakt self._sensor_source_id
-        self._sensor_source_id = source_entity_id
-
-        super().__init__(
-            cron_pattern=None,
-            delta_values=False,
-            meter_offset=timedelta(seconds=0),
-            meter_type=meter_type,
-            name=name,
-            net_consumption=False,
-            parent_meter=None,
-            periodically_resetting=True,
-            sensor_always_available=False,
-            source_entity=source_entity_id,
-            tariff=None,
-            tariff_entity=None,
-            unique_id=f"{coordinator.config_entry.entry_id}_{meter_key}",
-        )
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.api_key)},
-            name=f"AWEKAS ({coordinator.api_key[:5]})",
-            manufacturer="AWEKAS",
-            model="Weather Station",
-        )
+        """Initialize the sensor."""
+        super().__init__(coordinator, description.key)
+        self.entity_description = description
+        self._total: float | None = None
+        self._last_daily: float | None = None
+        self._period: str | None = None
+        active = sensor_active(coordinator, "precipitation")
+        if active is False or (
+            active is None and PRECIPITATION_TODAY(coordinator.data) is None
+        ):
+            self._attr_entity_registry_enabled_default = False
 
     async def async_added_to_hass(self) -> None:
-        """Handle entity which will be added to Home Assistant."""
+        """Restore the total and process the current data."""
         await super().async_added_to_hass()
 
-        # Prüfen, ob nach dem Wiederherstellen (Restore) ein gültiger Wert vorliegt.
-        # Falls nicht oder falls der Zustand 'unavailable'/'unknown'/None ist, auf 0 setzen.
-        if self._attr_native_value is None:
-            self._attr_native_value = Decimal(0)
-        else:
-            try:
-                self._attr_native_value = Decimal(str(self._attr_native_value))
-            except InvalidOperation, TypeError:
-                self._attr_native_value = Decimal(0)
+        if (extra := await self.async_get_last_extra_data()) and (
+            stored := PrecipitationTotalStoredData.from_dict(extra.as_dict())
+        ):
+            self._total = stored.total
+            self._last_daily = stored.last_daily
+            self._period = stored.period
+        elif (state := await self.async_get_last_state()) and (
+            total := _as_float(state.state)
+        ) is not None:
+            # State of the former utility meter based sensor: it already
+            # contains today's precipitation, so only count from now on.
+            self._total = total
+            self._period = self.entity_description.period_fn(
+                dt_util.as_local(state.last_changed)
+            )
 
-        # Optional: Prüfen, ob der Status in der State Machine ebenfalls ungültig ist
-        if self.state in (None, "unknown", "unavailable"):
-            self._attr_native_value = Decimal(0)
-            self.async_write_ha_state()
+        self._accumulate()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Add the new precipitation and write the state."""
+        self._accumulate()
+        super()._handle_coordinator_update()
+
+    def _accumulate(self) -> None:
+        """Add the precipitation since the last update to the total."""
+        daily = _as_float(PRECIPITATION_TODAY(self.coordinator.data))
+        if daily is None:
+            return
+
+        period = self.entity_description.period_fn(self.coordinator.station_time())
+        if self._total is None:
+            # First start: include what already fell today
+            self._total = daily
+        else:
+            if period != self._period:
+                self._total = 0.0
+            if self._last_daily is None:
+                increase = 0.0
+            elif daily >= self._last_daily:
+                increase = daily - self._last_daily
+            else:
+                # The daily value was reset at midnight
+                increase = daily
+            self._total = round(self._total + increase, 2)
+
+        self._period = period
+        self._last_daily = daily
+
+    @callback
+    def async_set_total(self, value: float) -> None:
+        """Set the total, e.g. to correct it afterwards.
+
+        The total continues from this value. Rain that the station reported
+        before is not added again.
+        """
+        self._total = round(value, 2)
+        self._period = self.entity_description.period_fn(
+            self.coordinator.station_time()
+        )
+        self._last_daily = _as_float(PRECIPITATION_TODAY(self.coordinator.data))
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the precipitation total."""
+        return self._total
+
+    @property
+    def extra_restore_state_data(self) -> PrecipitationTotalStoredData | None:
+        """Return the data to restore after a restart."""
+        if self._total is None:
+            return None
+        return PrecipitationTotalStoredData(
+            total=self._total, last_daily=self._last_daily, period=self._period
+        )

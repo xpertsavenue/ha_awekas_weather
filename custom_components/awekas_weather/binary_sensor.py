@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import logging
+from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -10,32 +10,30 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .coordinator import AwekasConfigEntry, AwekasDataUpdateCoordinator
+from .entity import AwekasEntity, sensor_active
 
 PARALLEL_UPDATES = 0
-
-_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
 class AwekasBinarySensorEntityDescription(BinarySensorEntityDescription):
-    """Klasse zur Beschreibung von AWEKAS Binary Sensoren."""
+    """Describes an AWEKAS binary sensor."""
 
-    value_fn: Callable[[dict], bool | None]
+    value_fn: Callable[[dict[str, Any]], Any]
+    # Key in the 'sensorstatus' section of the station API
+    status_key: str | None = None
 
 
-# Definition aller Binary-Sensoren
 BINARY_SENSOR_TYPES: tuple[AwekasBinarySensorEntityDescription, ...] = (
     AwekasBinarySensorEntityDescription(
         key="itsraining",
         translation_key="itsraining",
         device_class=BinarySensorDeviceClass.MOISTURE,
-        value_fn=lambda data: data.get("current", {}).get("itsraining"),
+        value_fn=lambda data: (data.get("current") or {}).get("itsraining"),
+        status_key="precipitation",
     ),
 )
 
@@ -47,20 +45,16 @@ async def async_setup_entry(
 ) -> None:
     """Set up AWEKAS binary sensors based on a config entry."""
     coordinator = entry.runtime_data
-
     async_add_entities(
         AwekasBinarySensor(coordinator, description)
         for description in BINARY_SENSOR_TYPES
     )
 
 
-class AwekasBinarySensor(
-    CoordinatorEntity[AwekasDataUpdateCoordinator], BinarySensorEntity
-):
-    """Representation of an AWEKAS Binary Sensor."""
+class AwekasBinarySensor(AwekasEntity, BinarySensorEntity):
+    """Representation of an AWEKAS binary sensor."""
 
     entity_description: AwekasBinarySensorEntityDescription
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -68,23 +62,27 @@ class AwekasBinarySensor(
         description: AwekasBinarySensorEntityDescription,
     ) -> None:
         """Initialize the binary sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, description.key)
         self.entity_description = description
+        # Sensors the station does not have are created disabled. Without
+        # the sensor status of the station API, a missing value decides.
+        active = sensor_active(coordinator, description.status_key)
+        if active is False or (
+            active is None and description.value_fn(coordinator.data) is None
+        ):
+            self._attr_entity_registry_enabled_default = False
 
-        # Eindeutige ID pro Entität (z. B. api_key_itsraining)
-        self._attr_unique_id = f"{coordinator.api_key}_{description.key}"
-
-        # Gruppierung aller Entitäten unter einem gemeinsamen Gerät
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.api_key)},
-            name=f"AWEKAS ({coordinator.api_key[:5]})",
-            manufacturer="AWEKAS",
-            model="Weather Station",
+    @property
+    def available(self) -> bool:
+        """Return if the station currently reports this value."""
+        return (
+            super().available
+            and not self.coordinator.data_is_stale
+            and self.entity_description.value_fn(self.coordinator.data) is not None
         )
 
     @property
     def is_on(self) -> bool | None:
         """Return true if the binary sensor is on."""
-        if not self.coordinator.data:
-            return None
-        return self.entity_description.value_fn(self.coordinator.data)
+        value = self.entity_description.value_fn(self.coordinator.data)
+        return None if value is None else bool(value)

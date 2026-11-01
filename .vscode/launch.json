@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Home Assistant Core (Debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "homeassistant",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config"
+      ],
+      "preLaunchTask": "Home Assistant: Setup",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Attach to running Home Assistant",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5678
+      },
+      "justMyCode": false
+    }
+  ]
+}

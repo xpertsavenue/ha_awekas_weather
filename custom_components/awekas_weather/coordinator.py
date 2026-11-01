@@ -1,41 +1,46 @@
 """DataUpdateCoordinator for AWEKAS Weather."""
 
-from datetime import timedelta
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone, tzinfo
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY, CONF_LANGUAGE
+from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .api import (
+    AwekasAuthError,
+    AwekasClient,
+    AwekasConnectionError,
+    AwekasError,
+    AwekasPlusNotActiveError,
+    AwekasQuotaError,
+)
+from .const import (
+    DOMAIN,
+    QUOTA_RETRY_AFTER,
+    STALE_AFTER,
+    STATION_UPDATE_INTERVAL,
+    UPDATE_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
-
-UPDATE_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
 
 type AwekasConfigEntry = ConfigEntry[AwekasDataUpdateCoordinator]
 
 
-class AwekasAuthError(ConfigEntryAuthFailed):
-    """Fehler bei ungültigem API-Schlüssel."""
-
-    translation_domain = DOMAIN
-    translation_key = "invalid_api_key"
-
-
 class AwekasDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Class to manage fetching AWEKAS data."""
+    """Fetch the current data every minute and the station data once a day."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    config_entry: AwekasConfigEntry
+
+    def __init__(self, hass: HomeAssistant, entry: AwekasConfigEntry) -> None:
         """Initialize coordinator."""
-        self.entry = entry
-        self.api_key = entry.data[CONF_API_KEY]
-        self.language = entry.data.get(CONF_LANGUAGE, "de")
-
         super().__init__(
             hass,
             _LOGGER,
@@ -43,40 +48,102 @@ class AwekasDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name=DOMAIN,
             update_interval=UPDATE_INTERVAL,
         )
-
-    def _validate_response(self, data: dict[str, Any]) -> None:
-        """Validiert die API-Antwort auf Fehlercodes."""
-        error_val = data.get("error")
-        if error_val:
-            error_str = str(error_val).lower().strip()
-            if error_str not in ("none", "null", ""):
-                if "invalid" in error_str or "key" in error_str:
-                    # Löst den Re-Auth-Flow in HA aus
-                    raise ConfigEntryAuthFailed("Invalid AWEKAS API key")
-
-                raise UpdateFailed(f"AWEKAS API error: {error_val}")
+        self.client = AwekasClient(
+            async_get_clientsession(hass),
+            entry.data[CONF_API_KEY],
+        )
+        # Response of the station API, None until it was fetched once
+        self.station: dict[str, Any] | None = None
+        self.station_timezone: tzinfo | None = None
+        self._station_updated: datetime | None = None
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from AWEKAS API."""
-        session = async_get_clientsession(self.hass)
-        url = (
-            f"https://api.awekas.at/current.php?key={self.api_key}&lng={self.language}"
+        """Fetch data from the AWEKAS API."""
+        data = await _async_call(self.client.async_get_current)
+        await self._async_update_station()
+        return data
+
+    async def _async_update_station(self) -> None:
+        """Fetch the station data once a day.
+
+        The station data is optional, so errors only keep the old data.
+        """
+        now = dt_util.utcnow()
+        if (
+            self._station_updated is not None
+            and now - self._station_updated < STATION_UPDATE_INTERVAL
+        ):
+            return
+        try:
+            station = await self.client.async_get_station()
+        except AwekasError as err:
+            _LOGGER.debug("Could not fetch the station data: %s", err)
+            return
+
+        self.station = station
+        self._station_updated = now
+        name = (station.get("station") or {}).get("timezone")
+        self.station_timezone = (
+            await dt_util.async_get_time_zone(name) if name else None
         )
 
-        # 1. Reine Netzwerk- / HTTP-Anfrage (fängt nur aiohttp/Timeout-Fehler ab)
-        try:
-            async with session.get(url, timeout=10) as response:
-                status = response.status
-                if status == 200:
-                    data = await response.json()
-        except Exception as err:
-            raise UpdateFailed(f"Error fetching AWEKAS data: {err}") from err
+    @property
+    def data_timestamp(self) -> datetime | None:
+        """Return when the station measured the current data."""
+        timestamp = (self.data.get("current") or {}).get("datatimestamp")
+        if not isinstance(timestamp, int | float):
+            return None
+        return dt_util.utc_from_timestamp(timestamp)
 
-        # 2. HTTP Status Code prüfen
-        if status != 200:
-            raise UpdateFailed(f"HTTP error fetching AWEKAS data: {status}")
+    @property
+    def data_is_stale(self) -> bool:
+        """Return if the station has not uploaded data for a while."""
+        timestamp = self.data_timestamp
+        return timestamp is not None and dt_util.utcnow() - timestamp > STALE_AFTER
 
-        # 3. Inhaltliche Daten-Validierung (ConfigEntryAuthFailed fliegt direkt ungehindert nach oben)
-        self._validate_response(data)
+    def station_time(self) -> datetime:
+        """Return the time of the current data in the time zone of the station."""
+        when = self.data_timestamp or dt_util.utcnow()
+        if self.station_timezone is not None:
+            return when.astimezone(self.station_timezone)
+        offset = (self.data.get("current") or {}).get("timeoffset")
+        if isinstance(offset, int):
+            return when.astimezone(timezone(timedelta(seconds=offset)))
+        return dt_util.as_local(when)
 
-        return data
+
+async def _async_call[T](request: Callable[[], Awaitable[T]]) -> T:
+    """Run an API request and convert its errors for the coordinator."""
+    try:
+        return await request()
+    except AwekasAuthError as err:
+        raise ConfigEntryAuthFailed(
+            f"The AWEKAS API rejected the API key: {err}",
+            translation_domain=DOMAIN,
+            translation_key="invalid_api_key",
+            translation_placeholders={"error": str(err)},
+        ) from err
+    except AwekasPlusNotActiveError as err:
+        raise ConfigEntryError(
+            "AWEKAS plus is not activated in the AWEKAS user profile",
+            translation_domain=DOMAIN,
+            translation_key="awekas_plus_not_active",
+        ) from err
+    except AwekasQuotaError as err:
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="quota_exceeded",
+            retry_after=QUOTA_RETRY_AFTER.total_seconds(),
+        ) from err
+    except AwekasConnectionError as err:
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect",
+            translation_placeholders={"error": str(err)},
+        ) from err
+    except AwekasError as err:
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="api_error",
+            translation_placeholders={"error": str(err)},
+        ) from err

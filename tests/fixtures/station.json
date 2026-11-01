@@ -1,0 +1,51 @@
+{
+  "fetchdate": 1596303120,
+  "error": null,
+  "station": {
+    "id": 5,
+    "location": "Micheldorf Test",
+    "country_iso": "AT",
+    "londec": 14.133530512089315,
+    "latdec": 47.878335611136543,
+    "elevation": 480,
+    "weblink": "http://stationsweb.awekas.at",
+    "camlink": "http://mywebcam.com/webcam.jpg",
+    "software": "AWEKAS Bridge Direct Link",
+    "hardware": "Davis Vantage Pro 2 (Plus)",
+    "timezone": "Europe/Vienna",
+    "AWEKASplus": 1
+  },
+  "stationsweb": {
+    "enabled": 1,
+    "period": "2027-12-31",
+    "premium": 1,
+    "weblink": "https://stationsweb.awekas.at/index.php?id=5"
+  },
+  "sensorstatus": {
+    "temperature": 1,
+    "humidity": 1,
+    "airpressure": 1,
+    "wind": 1,
+    "precipitation": 1,
+    "rainrate": 1,
+    "solar": 1,
+    "uv": 1,
+    "indoortemperature": 1,
+    "indoorhumidity": 1,
+    "soiltemp1": 0,
+    "soiltemp2": 0,
+    "soiltemp3": 0,
+    "soiltemp4": 0,
+    "soilmoisture1": 1,
+    "soilmoisture2": 0,
+    "soilmoisture3": 0,
+    "soilmoisture4": 0,
+    "leafwetness1": 0,
+    "leafwetness2": 0,
+    "humidity1": 1,
+    "humidity2": 0,
+    "humidity3": 0,
+    "humidity4": 0,
+    "airquality": 0
+  }
+}

@@ -1,0 +1,6 @@
+# Always check out with LF: the scripts run inside a Linux container and
+# break with CRLF line endings when the repository lives on a Windows host.
+* text=auto eol=lf
+
+*.png binary
+*.db binary

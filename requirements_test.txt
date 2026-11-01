@@ -1,0 +1,6 @@
+# Dev dependencies
+-r requirements_dev.txt
+
+# Pins pytest, pytest-asyncio, freezegun, ... Must match the homeassistant
+# version in requirements_dev.txt (0.13.340 <-> 2026.6.4).
+pytest-homeassistant-custom-component==0.13.340
