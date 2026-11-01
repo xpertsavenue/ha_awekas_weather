@@ -1,13 +1,13 @@
 """Weather platform for AWEKAS Integration."""
 
-from datetime import timedelta
 import logging
+from datetime import timedelta
 
 from homeassistant.components.weather import (
     Forecast,
     WeatherEntity,
-    WeatherEntityFeature,
 )
+from homeassistant.components.weather.const import WeatherEntityFeature
 from homeassistant.const import UnitOfPressure, UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo

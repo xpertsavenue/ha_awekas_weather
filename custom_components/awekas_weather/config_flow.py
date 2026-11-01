@@ -1,12 +1,11 @@
 """Config flow for the AWEKAS Weather integration."""
 
-from collections.abc import Mapping
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_LANGUAGE
 from homeassistant.core import HomeAssistant
@@ -75,6 +74,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
                     raise CannotConnect
 
     except aiohttp.ClientError as err:
+        _LOGGER.error("AWEKAS Verbindungsfehler Details: %r", err)
         # Fängt Netzwerkfehler (DNS, Offline, Timeout) ab
         raise CannotConnect from err
 

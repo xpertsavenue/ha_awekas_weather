@@ -1,0 +1,17 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (Import-Sortierung)
+    "UP",  # pyupgrade (Syntax auf neuere Python-Versionen anheben)
+    "ASYNC", # Rules for async Python (wichtig für HA)
+]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["custom_components.awekas_weather"]

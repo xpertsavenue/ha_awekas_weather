@@ -1,20 +1,19 @@
 """Sensor platform for AWEKAS Weather integration."""
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from datetime import timedelta
-import logging
+from decimal import Decimal, InvalidOperation
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
-    RestoreSensor,
 )
+from homeassistant.components.utility_meter.const import MONTHLY, YEARLY
 from homeassistant.components.utility_meter.sensor import UtilityMeterSensor
-from homeassistant.components.utility_meter.const import DAILY, MONTHLY, YEARLY
 from homeassistant.const import (
     DEGREE,
     PERCENTAGE,
@@ -28,9 +27,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -623,6 +620,7 @@ async def async_setup_entry(
 
         utility_meters = [
             AwekasUtilityMeterSensor(
+                hass=hass,
                 coordinator=coordinator,
                 meter_type=MONTHLY,
                 meter_key="precipitation_monthly",
@@ -630,6 +628,7 @@ async def async_setup_entry(
                 source_entity_id=precipitation_sensor_instance.entity_id,
             ),
             AwekasUtilityMeterSensor(
+                hass=hass,
                 coordinator=coordinator,
                 meter_type=YEARLY,
                 meter_key="precipitation_yearly",
@@ -672,99 +671,6 @@ class AwekasSensor(CoordinatorEntity[AwekasDataUpdateCoordinator], SensorEntity)
         return self.entity_description.value_fn(self.coordinator.data)
 
 
-class AwekasAccumulatedSensor(RestoreSensor, SensorEntity):
-    """Accumulated Awekas precipitation sensor using native RestoreSensor and LTS support."""
-
-    _attr_has_entity_name = True
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_device_class = SensorDeviceClass.PRECIPITATION
-    _attr_native_unit_of_measurement = "mm"
-
-    def __init__(
-        self,
-        coordinator,
-        sensor_key: str,
-        name: str,
-        source_entity_id: str,
-        reset_period: str,
-    ) -> None:
-        """Initialize the sensor."""
-        self.coordinator = coordinator
-        self._source_entity_id = source_entity_id
-        self._reset_period = reset_period
-
-        self._attr_name = name
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{sensor_key}"
-        self._attr_native_value = Decimal("0")
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.api_key)},
-            name=f"AWEKAS ({coordinator.api_key[:5]})",
-            manufacturer="AWEKAS",
-            model="Weather Station",
-        )
-
-    async def async_added_to_hass(self) -> None:
-        """Handle entity which will be added to Home Assistant."""
-        await super().async_added_to_hass()
-
-        # Hier wird der native Sensor-Wert (inkl. Typ und Einheit) aus dem Recorder geholt
-        if (last_sensor_data := await self.async_get_last_sensor_data()) is not None:
-            self._attr_native_value = last_sensor_data.native_value
-            self._attr_native_unit_of_measurement = (
-                last_sensor_data.native_unit_of_measurement
-            )
-        elif (last_state := await self.async_get_last_state()) is not None:
-            # Fallback falls keine Sensordaten vorliegen
-            try:
-                self._attr_native_value = float(last_state.state)
-            except ValueError:
-                self._attr_native_value = None
-
-        # Event-Listener für den Quell-Sensor registrieren
-        self.async_on_remove(
-            async_track_state_change_event(
-                self.hass, [self._source_entity_id], self._async_source_changed
-            )
-        )
-
-    async def _async_source_changed(self, event) -> None:
-        """Handle source updates and accumulate precipitation."""
-        new_state = event.data.get("new_state")
-        old_state = event.data.get("old_state")
-
-        if new_state is None or new_state.state in (None, "unknown", "unavailable"):
-            return
-
-        try:
-            current_source_val = Decimal(new_state.state)
-        except InvalidOperation, TypeError:
-            return
-
-        old_source_val = Decimal("0")
-        if old_state is not None and old_state.state not in (
-            None,
-            "unknown",
-            "unavailable",
-        ):
-            try:
-                old_source_val = Decimal(old_state.state)
-            except InvalidOperation, TypeError:
-                pass
-
-        if current_source_val < old_source_val:
-            delta = current_source_val
-        else:
-            delta = current_source_val - old_source_val
-
-        if delta > 0:
-            if self._attr_native_value is None:
-                self._attr_native_value = Decimal("0")
-
-            self._attr_native_value += delta
-            self.async_write_ha_state()
-
-
 class AwekasUtilityMeterSensor(UtilityMeterSensor):
     """Representation of an AWEKAS Utility Meter Sensor."""
 
@@ -775,6 +681,7 @@ class AwekasUtilityMeterSensor(UtilityMeterSensor):
 
     def __init__(
         self,
+        hass: HomeAssistant,  # <-- 1. 'hass' als Parameter aufnehmen
         coordinator: AwekasDataUpdateCoordinator,
         meter_type: str,
         meter_key: str,
@@ -786,6 +693,7 @@ class AwekasUtilityMeterSensor(UtilityMeterSensor):
         self._sensor_source_id = source_entity_id
 
         super().__init__(
+            hass,  # <-- 2. 'hass' als ERSTES Argument an super().__init__() übergeben!
             cron_pattern=None,
             delta_values=False,
             meter_offset=timedelta(seconds=0),
@@ -801,6 +709,11 @@ class AwekasUtilityMeterSensor(UtilityMeterSensor):
             unique_id=f"{coordinator.config_entry.entry_id}_{meter_key}",
         )
 
+        # Attribute NACH dem super().__init__() direkt auf der Instanz setzen:
+        self._attr_native_unit_of_measurement = UnitOfLength.MILLIMETERS
+        self._attr_device_class = SensorDeviceClass.PRECIPITATION
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.api_key)},
             name=f"AWEKAS ({coordinator.api_key[:5]})",
@@ -810,19 +723,33 @@ class AwekasUtilityMeterSensor(UtilityMeterSensor):
 
     async def async_added_to_hass(self) -> None:
         """Handle entity which will be added to Home Assistant."""
+        # Erst die Elternklasse initialisieren lassen (versucht Restore aus der DB)
         await super().async_added_to_hass()
 
-        # Prüfen, ob nach dem Wiederherstellen (Restore) ein gültiger Wert vorliegt.
-        # Falls nicht oder falls der Zustand 'unavailable'/'unknown'/None ist, auf 0 setzen.
-        if self._attr_native_value is None:
-            self._attr_native_value = Decimal(0)
-        else:
-            try:
-                self._attr_native_value = Decimal(str(self._attr_native_value))
-            except InvalidOperation, TypeError:
+        # 2. Sicherstellen, dass die Einheit NICHT von der Mutterklasse mit None überschrieben wurde
+        self._attr_native_unit_of_measurement = UnitOfLength.MILLIMETERS
+
+        # 3. Falls nach Restore der Wert ungültig/None ist (z. B. Erstinstalltion):
+        if self._attr_native_value is None or self.state in (
+            None,
+            "unknown",
+            "unavailable",
+        ):
+            # Versuche, den aktuellen Stand des Quellsensors aus der State Machine zu lesen
+            source_state = self.hass.states.get(self._sensor_source_id)
+            if source_state is not None and source_state.state not in (
+                None,
+                "unknown",
+                "unavailable",
+            ):
+                try:
+                    # Wenn der Quellsensor schon einen Wert liefert, nehmen wir diesen als Basis
+                    self._attr_native_value = Decimal(source_state.state)
+                except InvalidOperation, TypeError:
+                    self._attr_native_value = Decimal(0)
+            else:
+                # Fallback für die Erstinstallation ohne bisherige Werte
                 self._attr_native_value = Decimal(0)
 
-        # Optional: Prüfen, ob der Status in der State Machine ebenfalls ungültig ist
-        if self.state in (None, "unknown", "unavailable"):
-            self._attr_native_value = Decimal(0)
+            # Den Zustand JETZT explizit mit der gesetzten Einheit in HA schreiben!
             self.async_write_ha_state()
